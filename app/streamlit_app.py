@@ -10,6 +10,11 @@ from utils.pdf_generator import generate_evidence_pdf
 from utils.ml_predictor import load_models, predict_text, LABEL_COLS
 from utils.harassment_rules import detect_harassment_types
 from utils.india_laws import get_india_laws
+from utils.complaint_drafts import (
+    build_police_complaint,
+    build_posh_complaint,
+    build_cybercrime_draft,
+)
 
 
 # -----------------------------
@@ -116,23 +121,11 @@ def save_upload(file_obj):
 
 
 def run_full_analysis(text: str):
-    """
-    Hybrid analysis:
-    - Rule-based harassment type detection
-    - ML toxicity probabilities
-    - India laws mapping
-    - Final combined severity score
-    """
-
     text = (text or "").strip()
 
-    # RULE BASED
     detected_types, rule_hits = detect_harassment_types(text)
-
-    # INDIA LAWS (based on detected types)
     laws = get_india_laws(detected_types)
 
-    # ML BASED
     ml_probs = {}
     if st.session_state.ml_ready:
         try:
@@ -140,9 +133,7 @@ def run_full_analysis(text: str):
         except Exception:
             ml_probs = {}
 
-    # Combine into severity score (0-100)
     severity = 0
-
     type_weights = {
         "Sexual Harassment / Physical Touching": 40,
         "Workplace Harassment": 25,
@@ -183,190 +174,186 @@ def run_full_analysis(text: str):
 
 
 # -----------------------------
-# UI Layout
+# Header
 # -----------------------------
 st.title("🛡️ Harassment Detection + Evidence Support (India)")
+st.caption("Hybrid harassment analysis + evidence integrity + complaint draft generation.")
 
-left, mid, right = st.columns([1, 1.6, 1.2])
+tabs = st.tabs(["🔍 Analyse Incident", "📄 Evidence Pack (PDF)", "📝 Complaint Drafts"])
 
 
-# -----------------------------
-# LEFT: Case Setup
-# -----------------------------
-with left:
-    st.subheader("📌 Case Setup")
+# =========================================================
+# TAB 1: ANALYSE
+# =========================================================
+with tabs[0]:
+    left, mid, right = st.columns([1, 1.6, 1.2])
 
-    st.markdown(f"**Case ID:** `{st.session_state.case_id}`")
+    with left:
+        st.subheader("📌 Case Setup")
+        st.markdown(f"**Case ID:** `{st.session_state.case_id}`")
 
-    case_title = st.text_input(
-        "Case Title",
-        value="Harassment Incident Report",
-        key="case_title",
+        case_title = st.text_input(
+            "Case Title",
+            value="Harassment Incident Report",
+            key="case_title",
+        )
+
+        reporter_role = st.selectbox(
+            "Your role",
+            ["Victim/Target", "Witness", "Friend/Helper", "HR/Employer", "Other"],
+            key="reporter_role",
+        )
+
+        st.divider()
+        st.subheader("⚠️ Disclaimer")
+        st.write(
+            "This app provides organizational support and general information. "
+            "It is **not legal advice**. ML outputs are **not proof**."
+        )
+
+    with mid:
+        st.subheader("📝 Incident Details")
+
+        incident_location = st.text_input(
+            "Where did it happen? (optional)",
+            placeholder="WhatsApp, Instagram, Office, College, Street...",
+            key="incident_location",
+        )
+
+        incident_summary = st.text_area(
+            "What happened? (Write the incident summary here)",
+            height=140,
+            placeholder="Example: My boss touched me inappropriately in the office and threatened my job...",
+            key="incident_summary",
+        )
+
+        st.subheader("📅 Timeline Entry")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            entry_date = st.date_input("Date", key="entry_date")
+        with col2:
+            entry_time = st.time_input("Time", key="entry_time")
+
+        entry_location = st.text_input(
+            "Location",
+            placeholder="Office floor 2 / WhatsApp chat / College gate...",
+            key="entry_location",
+        )
+
+        entry_desc = st.text_area(
+            "Event description",
+            height=80,
+            placeholder="Describe what happened in this timeline entry...",
+            key="entry_desc",
+        )
+
+        if st.button("➕ Add to Timeline"):
+            if entry_desc.strip():
+                st.session_state.timeline.append(
+                    {
+                        "date": str(entry_date),
+                        "time": str(entry_time),
+                        "location": entry_location.strip(),
+                        "description": entry_desc.strip(),
+                    }
+                )
+                st.success("Timeline entry added.")
+            else:
+                st.error("Timeline description cannot be empty.")
+
+        if st.session_state.timeline:
+            st.info("Timeline entries:")
+            for i, e in enumerate(st.session_state.timeline, start=1):
+                st.write(f"**{i}.** {e['date']} {e['time']} — {e['location']}")
+                st.caption(e["description"])
+        else:
+            st.info("No timeline entries yet. Add at least 2–3 for a strong report.")
+
+    with right:
+        st.subheader("🔍 Harassment Detection (Hybrid)")
+        st.write("This will NOT run automatically. Click the button below.")
+
+        analyse_clicked = st.button("🔍 Analyse Incident", use_container_width=True)
+
+        if analyse_clicked:
+            if not incident_summary.strip():
+                st.error("Write an incident summary first.")
+            else:
+                result = run_full_analysis(incident_summary)
+                st.session_state.analysis_done = True
+                st.session_state.analysis_result = result
+
+        if st.session_state.analysis_done:
+            res = st.session_state.analysis_result
+
+            st.subheader("📌 Analysis Result")
+
+            if res.get("harassment_likely"):
+                st.success("Harassment Likely: YES")
+            else:
+                st.warning("Harassment Likely: NOT CLEAR / LOW SIGNAL")
+
+            st.write(f"**Severity Score:** `{res.get('combined_severity', 0)}/100`")
+
+            st.divider()
+            st.subheader("📍 Detected Harassment Types")
+            types = res.get("detected_types", [])
+            if types:
+                for t in types:
+                    st.write(f"✅ {t}")
+            else:
+                st.write("No harassment types detected.")
+
+            st.divider()
+            st.subheader("⚖️ Possible Indian Laws (Informational)")
+            laws = res.get("laws", [])
+            if laws:
+                for sec, desc in laws:
+                    st.write(f"**{sec}** — {desc}")
+            else:
+                st.write("No law suggestions available for this summary.")
+
+            st.divider()
+            st.subheader("🤖 ML Toxicity Probabilities")
+
+            if st.session_state.ml_ready:
+                ml_probs = res.get("ml_probs", {})
+                if ml_probs:
+                    for k in LABEL_COLS:
+                        st.progress(float(ml_probs.get(k, 0.0)))
+                        st.caption(f"{k}: {ml_probs.get(k, 0.0):.3f}")
+                else:
+                    st.write("ML model returned no probabilities.")
+            else:
+                st.warning("ML model not available. Only rule-based detection is active.")
+
+            with st.expander("🔎 Why it detected these types (rule matches)"):
+                hits = res.get("rule_hits", {})
+                if hits:
+                    for cat, phrases in hits.items():
+                        st.write(f"**{cat}**")
+                        for p in phrases:
+                            st.write(f"• matched: `{p}`")
+                else:
+                    st.write("No rule hits recorded.")
+
+
+# =========================================================
+# TAB 2: PDF + Uploads
+# =========================================================
+with tabs[1]:
+    st.subheader("📎 Upload Evidence + Export PDF")
+
+    st.info(
+        "Uploads are stored temporarily in `/uploads`. "
+        "You can enable Privacy Mode to auto-delete after export."
     )
-
-    reporter_role = st.selectbox(
-        "Your role",
-        ["Victim/Target", "Witness", "Friend/Helper", "HR/Employer", "Other"],
-        key="reporter_role",
-    )
-
-    st.divider()
-    st.subheader("🔐 Privacy Mode")
 
     delete_after_export = st.checkbox(
-        "Delete uploaded evidence files after generating PDF",
+        "Privacy Mode: Delete uploaded evidence files after generating PDF",
         value=True,
-        help="Recommended for real-world privacy. PDF will still contain file hashes + thumbnails.",
     )
-
-    st.divider()
-    st.subheader("⚠️ Disclaimer")
-    st.write(
-        "This app provides organizational support and general information. "
-        "It is **not legal advice**. ML outputs are **not proof**."
-    )
-
-
-# -----------------------------
-# MID: Incident + Timeline
-# -----------------------------
-with mid:
-    st.subheader("📝 Incident Details")
-
-    incident_location = st.text_input(
-        "Where did it happen? (optional)",
-        placeholder="WhatsApp, Instagram, Office, College, Street...",
-        key="incident_location",
-    )
-
-    incident_summary = st.text_area(
-        "What happened? (Write the incident summary here)",
-        height=140,
-        placeholder="Example: My boss touched me inappropriately in the office and threatened my job...",
-        key="incident_summary",
-    )
-
-    st.subheader("📅 Timeline Entry")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        entry_date = st.date_input("Date", key="entry_date")
-
-    with col2:
-        entry_time = st.time_input("Time", key="entry_time")
-
-    entry_location = st.text_input(
-        "Location",
-        placeholder="Office floor 2 / WhatsApp chat / College gate...",
-        key="entry_location",
-    )
-
-    entry_desc = st.text_area(
-        "Event description",
-        height=80,
-        placeholder="Describe what happened in this timeline entry...",
-        key="entry_desc",
-    )
-
-    if st.button("➕ Add to Timeline"):
-        if entry_desc.strip():
-            st.session_state.timeline.append(
-                {
-                    "date": str(entry_date),
-                    "time": str(entry_time),
-                    "location": entry_location.strip(),
-                    "description": entry_desc.strip(),
-                }
-            )
-            st.success("Timeline entry added.")
-        else:
-            st.error("Timeline description cannot be empty.")
-
-    if st.session_state.timeline:
-        st.info("Timeline entries:")
-        for i, e in enumerate(st.session_state.timeline, start=1):
-            st.write(f"**{i}.** {e['date']} {e['time']} — {e['location']}")
-            st.caption(e["description"])
-    else:
-        st.info("No timeline entries yet. Add at least 2–3 for a strong report.")
-
-
-# -----------------------------
-# RIGHT: Analyse + Upload + Export
-# -----------------------------
-with right:
-    st.subheader("🔍 Harassment Detection (Hybrid)")
-    st.write("This will NOT run automatically. Click the button below.")
-
-    analyse_clicked = st.button("🔍 Analyse Incident", use_container_width=True)
-
-    if analyse_clicked:
-        if not incident_summary.strip():
-            st.error("Write an incident summary first.")
-        else:
-            result = run_full_analysis(incident_summary)
-            st.session_state.analysis_done = True
-            st.session_state.analysis_result = result
-
-    if st.session_state.analysis_done:
-        res = st.session_state.analysis_result
-
-        st.subheader("📌 Analysis Result")
-
-        if res.get("harassment_likely"):
-            st.success("Harassment Likely: YES")
-        else:
-            st.warning("Harassment Likely: NOT CLEAR / LOW SIGNAL")
-
-        st.write(f"**Severity Score:** `{res.get('combined_severity', 0)}/100`")
-
-        st.divider()
-        st.subheader("📍 Detected Harassment Types")
-
-        types = res.get("detected_types", [])
-        if types:
-            for t in types:
-                st.write(f"✅ {t}")
-        else:
-            st.write("No harassment types detected.")
-
-        st.divider()
-        st.subheader("⚖️ Possible Indian Laws (Informational)")
-
-        laws = res.get("laws", [])
-        if laws:
-            for sec, desc in laws:
-                st.write(f"**{sec}** — {desc}")
-        else:
-            st.write("No law suggestions available for this summary.")
-
-        st.divider()
-        st.subheader("🤖 ML Toxicity Probabilities")
-
-        if st.session_state.ml_ready:
-            ml_probs = res.get("ml_probs", {})
-            if ml_probs:
-                for k in LABEL_COLS:
-                    st.progress(float(ml_probs.get(k, 0.0)))
-                    st.caption(f"{k}: {ml_probs.get(k, 0.0):.3f}")
-            else:
-                st.write("ML model returned no probabilities.")
-        else:
-            st.warning("ML model not available. Only rule-based detection is active.")
-
-        with st.expander("🔎 Why it detected these types (rule matches)"):
-            hits = res.get("rule_hits", {})
-            if hits:
-                for cat, phrases in hits.items():
-                    st.write(f"**{cat}**")
-                    for p in phrases:
-                        st.write(f"• matched: `{p}`")
-            else:
-                st.write("No rule hits recorded.")
-
-    st.divider()
-    st.subheader("📎 Upload Evidence (SHA256 secured)")
 
     up = st.file_uploader(
         "Upload screenshots / audio / docs",
@@ -389,15 +376,12 @@ with right:
     else:
         st.caption("No files uploaded yet.")
 
-    st.divider()
-    st.subheader("📄 Export Evidence Pack")
-
     case_json = {
         "case_id": st.session_state.case_id,
-        "case_title": case_title.strip(),
-        "reporter_role": reporter_role,
-        "incident_location": incident_location.strip(),
-        "incident_summary": incident_summary.strip(),
+        "case_title": st.session_state.get("case_title", "").strip(),
+        "reporter_role": st.session_state.get("reporter_role", ""),
+        "incident_location": st.session_state.get("incident_location", "").strip(),
+        "incident_summary": st.session_state.get("incident_summary", "").strip(),
         "timeline": st.session_state.timeline,
         "uploads": st.session_state.uploads,
         "analysis_done": st.session_state.analysis_done,
@@ -405,13 +389,14 @@ with right:
         "created_at": datetime.now().isoformat(),
     }
 
+    st.divider()
+
     if st.button("📄 Generate PDF Evidence Pack", use_container_width=True):
         pdf_name = f"evidence_pack_{st.session_state.case_id}.pdf"
         pdf_path = os.path.join(EXPORT_DIR, pdf_name)
 
         generate_evidence_pdf(case_json, pdf_path)
 
-        # Offer download
         with open(pdf_path, "rb") as f:
             st.download_button(
                 "⬇️ Download PDF",
@@ -421,13 +406,11 @@ with right:
                 use_container_width=True,
             )
 
-        # PRIVACY MODE: delete evidence after export
         if delete_after_export:
             deleted_count = 0
             for u in list(st.session_state.uploads):
                 if safe_delete_file(u.get("path")):
                     deleted_count += 1
-
             st.session_state.uploads = []
             st.success(
                 f"PDF generated successfully. Privacy Mode ON → deleted {deleted_count} evidence files."
@@ -442,3 +425,79 @@ with right:
         mime="application/json",
         use_container_width=True,
     )
+
+
+# =========================================================
+# TAB 3: COMPLAINT DRAFTS
+# =========================================================
+with tabs[2]:
+    st.subheader("📝 Complaint Draft Generator (India)")
+    st.write(
+        "This generates structured complaint drafts based on your case data, timeline, "
+        "detected harassment type(s), and suggested laws."
+    )
+
+    case_json = {
+        "case_id": st.session_state.case_id,
+        "case_title": st.session_state.get("case_title", "").strip(),
+        "reporter_role": st.session_state.get("reporter_role", ""),
+        "incident_location": st.session_state.get("incident_location", "").strip(),
+        "incident_summary": st.session_state.get("incident_summary", "").strip(),
+        "timeline": st.session_state.timeline,
+        "uploads": st.session_state.uploads,
+        "analysis_done": st.session_state.analysis_done,
+        "analysis_result": st.session_state.analysis_result,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    if not case_json["incident_summary"]:
+        st.warning("Please fill the incident summary in the Analyse tab first.")
+    else:
+        colA, colB, colC = st.columns(3)
+
+        with colA:
+            if st.button("🚓 Generate Police Complaint", use_container_width=True):
+                st.session_state.police_draft = build_police_complaint(case_json)
+
+        with colB:
+            if st.button("🏢 Generate POSH Complaint", use_container_width=True):
+                st.session_state.posh_draft = build_posh_complaint(case_json)
+
+        with colC:
+            if st.button("💻 Generate Cybercrime Draft", use_container_width=True):
+                st.session_state.cyber_draft = build_cybercrime_draft(case_json)
+
+        st.divider()
+
+        if "police_draft" in st.session_state:
+            st.subheader("🚓 Police Complaint Draft")
+            st.text_area("Draft", st.session_state.police_draft, height=320)
+            st.download_button(
+                "⬇️ Download Police Draft (TXT)",
+                data=st.session_state.police_draft.encode("utf-8"),
+                file_name=f"police_complaint_{st.session_state.case_id}.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+
+        if "posh_draft" in st.session_state:
+            st.subheader("🏢 POSH Complaint Draft")
+            st.text_area("Draft", st.session_state.posh_draft, height=320)
+            st.download_button(
+                "⬇️ Download POSH Draft (TXT)",
+                data=st.session_state.posh_draft.encode("utf-8"),
+                file_name=f"posh_complaint_{st.session_state.case_id}.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+
+        if "cyber_draft" in st.session_state:
+            st.subheader("💻 Cybercrime Complaint Draft")
+            st.text_area("Draft", st.session_state.cyber_draft, height=320)
+            st.download_button(
+                "⬇️ Download Cybercrime Draft (TXT)",
+                data=st.session_state.cyber_draft.encode("utf-8"),
+                file_name=f"cybercrime_complaint_{st.session_state.case_id}.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
