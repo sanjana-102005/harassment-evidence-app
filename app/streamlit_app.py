@@ -36,20 +36,23 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # -----------------------------
 # Session defaults
 # -----------------------------
-if "case_id" not in st.session_state:
+def new_case():
     st.session_state.case_id = str(uuid.uuid4())[:8]
-
-if "timeline" not in st.session_state:
     st.session_state.timeline = []
-
-if "uploads" not in st.session_state:
     st.session_state.uploads = []
-
-if "analysis_done" not in st.session_state:
     st.session_state.analysis_done = False
-
-if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = {}
+    st.session_state.police_draft = None
+    st.session_state.posh_draft = None
+    st.session_state.cyber_draft = None
+    st.session_state.case_title = "Harassment Incident Report"
+    st.session_state.reporter_role = "Victim/Target"
+    st.session_state.incident_location = ""
+    st.session_state.incident_summary = ""
+
+
+if "case_id" not in st.session_state:
+    new_case()
 
 if "models_loaded" not in st.session_state:
     st.session_state.models_loaded = False
@@ -97,11 +100,24 @@ def safe_delete_file(path: str):
     return False
 
 
+def cleanup_case_files():
+    """
+    Deletes all uploaded evidence files for this session.
+    Also clears session upload list.
+    """
+    deleted = 0
+    for u in list(st.session_state.uploads):
+        if safe_delete_file(u.get("path")):
+            deleted += 1
+    st.session_state.uploads = []
+    return deleted
+
+
 def save_upload(file_obj):
     if file_obj is None:
         return None
 
-    safe_name = f"{uuid.uuid4().hex}_{file_obj.name}"
+    safe_name = f"{st.session_state.case_id}_{uuid.uuid4().hex}_{file_obj.name}"
     save_path = os.path.join(UPLOAD_DIR, safe_name)
 
     with open(save_path, "wb") as f:
@@ -179,6 +195,23 @@ def run_full_analysis(text: str):
 st.title("🛡️ Harassment Detection + Evidence Support (India)")
 st.caption("Hybrid harassment analysis + evidence integrity + complaint draft generation.")
 
+st.warning(
+    "⚠️ Real-world safety note: Do NOT upload highly sensitive evidence on a public deployment. "
+    "Use local deployment for real cases. This tool is for educational + organizational support."
+)
+
+topA, topB = st.columns([1, 1])
+
+with topA:
+    st.markdown(f"**Case ID:** `{st.session_state.case_id}`")
+
+with topB:
+    if st.button("🧹 Reset Case (Delete uploads + clear data)", use_container_width=True):
+        deleted = cleanup_case_files()
+        new_case()
+        st.success(f"Case reset done. Deleted {deleted} uploaded file(s).")
+        st.rerun()
+
 tabs = st.tabs(["🔍 Analyse Incident", "📄 Evidence Pack (PDF)", "📝 Complaint Drafts"])
 
 
@@ -190,18 +223,20 @@ with tabs[0]:
 
     with left:
         st.subheader("📌 Case Setup")
-        st.markdown(f"**Case ID:** `{st.session_state.case_id}`")
 
-        case_title = st.text_input(
+        st.session_state.case_title = st.text_input(
             "Case Title",
-            value="Harassment Incident Report",
-            key="case_title",
+            value=st.session_state.case_title,
         )
 
-        reporter_role = st.selectbox(
+        st.session_state.reporter_role = st.selectbox(
             "Your role",
             ["Victim/Target", "Witness", "Friend/Helper", "HR/Employer", "Other"],
-            key="reporter_role",
+            index=["Victim/Target", "Witness", "Friend/Helper", "HR/Employer", "Other"].index(
+                st.session_state.reporter_role
+            )
+            if st.session_state.reporter_role in ["Victim/Target", "Witness", "Friend/Helper", "HR/Employer", "Other"]
+            else 0,
         )
 
         st.divider()
@@ -214,38 +249,36 @@ with tabs[0]:
     with mid:
         st.subheader("📝 Incident Details")
 
-        incident_location = st.text_input(
+        st.session_state.incident_location = st.text_input(
             "Where did it happen? (optional)",
             placeholder="WhatsApp, Instagram, Office, College, Street...",
-            key="incident_location",
+            value=st.session_state.incident_location,
         )
 
-        incident_summary = st.text_area(
+        st.session_state.incident_summary = st.text_area(
             "What happened? (Write the incident summary here)",
             height=140,
             placeholder="Example: My boss touched me inappropriately in the office and threatened my job...",
-            key="incident_summary",
+            value=st.session_state.incident_summary,
         )
 
         st.subheader("📅 Timeline Entry")
 
         col1, col2 = st.columns(2)
         with col1:
-            entry_date = st.date_input("Date", key="entry_date")
+            entry_date = st.date_input("Date")
         with col2:
-            entry_time = st.time_input("Time", key="entry_time")
+            entry_time = st.time_input("Time")
 
         entry_location = st.text_input(
             "Location",
             placeholder="Office floor 2 / WhatsApp chat / College gate...",
-            key="entry_location",
         )
 
         entry_desc = st.text_area(
             "Event description",
             height=80,
             placeholder="Describe what happened in this timeline entry...",
-            key="entry_desc",
         )
 
         if st.button("➕ Add to Timeline"):
@@ -277,10 +310,10 @@ with tabs[0]:
         analyse_clicked = st.button("🔍 Analyse Incident", use_container_width=True)
 
         if analyse_clicked:
-            if not incident_summary.strip():
+            if not st.session_state.incident_summary.strip():
                 st.error("Write an incident summary first.")
             else:
-                result = run_full_analysis(incident_summary)
+                result = run_full_analysis(st.session_state.incident_summary)
                 st.session_state.analysis_done = True
                 st.session_state.analysis_result = result
 
@@ -346,8 +379,8 @@ with tabs[1]:
     st.subheader("📎 Upload Evidence + Export PDF")
 
     st.info(
-        "Uploads are stored temporarily in `/uploads`. "
-        "You can enable Privacy Mode to auto-delete after export."
+        "Evidence uploads are stored temporarily in `/uploads`. "
+        "Recommended: keep Privacy Mode ON."
     )
 
     delete_after_export = st.checkbox(
@@ -378,10 +411,10 @@ with tabs[1]:
 
     case_json = {
         "case_id": st.session_state.case_id,
-        "case_title": st.session_state.get("case_title", "").strip(),
-        "reporter_role": st.session_state.get("reporter_role", ""),
-        "incident_location": st.session_state.get("incident_location", "").strip(),
-        "incident_summary": st.session_state.get("incident_summary", "").strip(),
+        "case_title": st.session_state.case_title.strip(),
+        "reporter_role": st.session_state.reporter_role,
+        "incident_location": st.session_state.incident_location.strip(),
+        "incident_summary": st.session_state.incident_summary.strip(),
         "timeline": st.session_state.timeline,
         "uploads": st.session_state.uploads,
         "analysis_done": st.session_state.analysis_done,
@@ -406,17 +439,17 @@ with tabs[1]:
                 use_container_width=True,
             )
 
+        # Delete uploads after export
         if delete_after_export:
-            deleted_count = 0
-            for u in list(st.session_state.uploads):
-                if safe_delete_file(u.get("path")):
-                    deleted_count += 1
-            st.session_state.uploads = []
+            deleted_count = cleanup_case_files()
             st.success(
                 f"PDF generated successfully. Privacy Mode ON → deleted {deleted_count} evidence files."
             )
         else:
             st.success("PDF generated successfully. Privacy Mode OFF → evidence files kept locally.")
+
+        # Delete exported PDF after generation (real-world privacy)
+        safe_delete_file(pdf_path)
 
     st.download_button(
         "💾 Save Case as JSON",
@@ -433,16 +466,16 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("📝 Complaint Draft Generator (India)")
     st.write(
-        "This generates structured complaint drafts based on your case data, timeline, "
-        "detected harassment type(s), and suggested laws."
+        "Generates structured complaint drafts based on your case summary, timeline, "
+        "detected harassment types, and suggested laws."
     )
 
     case_json = {
         "case_id": st.session_state.case_id,
-        "case_title": st.session_state.get("case_title", "").strip(),
-        "reporter_role": st.session_state.get("reporter_role", ""),
-        "incident_location": st.session_state.get("incident_location", "").strip(),
-        "incident_summary": st.session_state.get("incident_summary", "").strip(),
+        "case_title": st.session_state.case_title.strip(),
+        "reporter_role": st.session_state.reporter_role,
+        "incident_location": st.session_state.incident_location.strip(),
+        "incident_summary": st.session_state.incident_summary.strip(),
         "timeline": st.session_state.timeline,
         "uploads": st.session_state.uploads,
         "analysis_done": st.session_state.analysis_done,
@@ -469,7 +502,7 @@ with tabs[2]:
 
         st.divider()
 
-        if "police_draft" in st.session_state:
+        if st.session_state.get("police_draft"):
             st.subheader("🚓 Police Complaint Draft")
             st.text_area("Draft", st.session_state.police_draft, height=320)
             st.download_button(
@@ -480,7 +513,7 @@ with tabs[2]:
                 use_container_width=True,
             )
 
-        if "posh_draft" in st.session_state:
+        if st.session_state.get("posh_draft"):
             st.subheader("🏢 POSH Complaint Draft")
             st.text_area("Draft", st.session_state.posh_draft, height=320)
             st.download_button(
@@ -491,7 +524,7 @@ with tabs[2]:
                 use_container_width=True,
             )
 
-        if "cyber_draft" in st.session_state:
+        if st.session_state.get("cyber_draft"):
             st.subheader("💻 Cybercrime Complaint Draft")
             st.text_area("Draft", st.session_state.cyber_draft, height=320)
             st.download_button(
