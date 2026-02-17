@@ -19,6 +19,11 @@ from utils.harassment_rules import (
     build_evidence_checklist,
 )
 from utils.india_laws import get_india_laws
+from utils.chat_parser import (
+    parse_whatsapp_chat,
+    chat_to_summary,
+    extract_threat_obscene_signals,
+)
 from utils.complaint_drafts import (
     build_police_complaint,
     build_posh_complaint,
@@ -79,6 +84,9 @@ def new_case():
     st.session_state.reporter_role = "Victim/Target"
     st.session_state.incident_location = ""
     st.session_state.incident_summary = ""
+    st.session_state.chat_raw = ""
+    st.session_state.chat_events = []
+    st.session_state.chat_signals = []
 
 
 if "case_id" not in st.session_state:
@@ -220,15 +228,12 @@ def run_full_analysis(text: str):
     # -----------------------------
     harassment_likely = False
 
-    # Binary model is strongest
     if binary_pred == 1 and (binary_prob is not None and binary_prob >= 0.50):
         harassment_likely = True
 
-    # Rule-based types also strong
     if detected_types:
         harassment_likely = True
 
-    # Toxicity only acts as weak fallback
     if not harassment_likely and ml_probs:
         if ml_probs.get("threat", 0) > 0.55:
             harassment_likely = True
@@ -254,11 +259,9 @@ def run_full_analysis(text: str):
     for t in detected_types:
         severity += type_weights.get(t, 15)
 
-    # binary prob influences severity
     if binary_prob is not None:
         severity += int(binary_prob * 35)
 
-    # toxicity adds smaller weight
     if ml_probs:
         severity += int(ml_probs.get("threat", 0) * 15)
         severity += int(ml_probs.get("obscene", 0) * 12)
@@ -294,7 +297,7 @@ def run_full_analysis(text: str):
 # UI Header
 # -----------------------------
 st.title("🛡️ Harassment Detection + Evidence Support (India)")
-st.caption("Harassment YES/NO + harassment type + India law guidance + PDF evidence pack")
+st.caption("Harassment YES/NO + harassment type + India law guidance + PDF evidence pack + chat log analysis")
 
 st.warning(
     "⚠️ Safety note: Do NOT upload highly sensitive evidence on a public deployment. "
@@ -355,6 +358,14 @@ with tabs[0]:
         st.write(f"Binary harassment model: {'✅ Ready' if st.session_state.ml_ready_binary else '❌ Missing'}")
         st.write(f"Multi-label toxicity model: {'✅ Ready' if st.session_state.ml_ready_multilabel else '❌ Missing'}")
 
+        st.divider()
+        st.subheader("💬 Chat Log Signals")
+        if st.session_state.chat_signals:
+            for s in st.session_state.chat_signals:
+                st.write(f"• {s}")
+        else:
+            st.caption("No chat signals extracted yet.")
+
     with mid:
         st.subheader("📝 Incident Details")
 
@@ -371,7 +382,62 @@ with tabs[0]:
             value=st.session_state.incident_summary,
         )
 
-        st.subheader("📅 Timeline Entry")
+        st.divider()
+        st.subheader("💬 Paste WhatsApp Chat Export (Optional)")
+
+        st.session_state.chat_raw = st.text_area(
+            "Paste chat here",
+            height=160,
+            placeholder="Example:\n12/31/23, 9:30 PM - Name: message",
+            value=st.session_state.chat_raw,
+        )
+
+        col_chat_a, col_chat_b = st.columns(2)
+
+        with col_chat_a:
+            if st.button("📥 Extract From Chat (Auto-fill Summary + Timeline)", use_container_width=True):
+                if not st.session_state.chat_raw.strip():
+                    st.error("Paste a WhatsApp chat export first.")
+                else:
+                    events = parse_whatsapp_chat(st.session_state.chat_raw)
+                    st.session_state.chat_events = events
+                    st.session_state.chat_signals = extract_threat_obscene_signals(events)
+
+                    if events:
+                        # Auto summary
+                        summary = chat_to_summary(events, max_lines=12)
+                        if summary:
+                            st.session_state.incident_summary = (
+                                "Chat extract summary (auto-generated):\n" + summary
+                            )
+
+                        # Auto timeline
+                        st.session_state.timeline = []
+                        for e in events[:10]:
+                            st.session_state.timeline.append(
+                                {
+                                    "date": e.get("date", ""),
+                                    "time": e.get("time", ""),
+                                    "location": "Chat (WhatsApp export)",
+                                    "description": f"{e.get('sender')}: {e.get('message')}",
+                                }
+                            )
+
+                        st.success(f"Extracted {len(events)} chat messages. Summary + timeline filled.")
+                        st.rerun()
+                    else:
+                        st.warning("Could not parse chat. Format may be different.")
+
+        with col_chat_b:
+            if st.button("🧹 Clear Chat", use_container_width=True):
+                st.session_state.chat_raw = ""
+                st.session_state.chat_events = []
+                st.session_state.chat_signals = []
+                st.success("Chat cleared.")
+                st.rerun()
+
+        st.divider()
+        st.subheader("📅 Timeline Entry (Manual)")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -438,16 +504,24 @@ with tabs[0]:
 
             st.write(f"**Severity Score:** `{res.get('combined_severity', 0)}/100`")
 
-            # Binary model output
             st.divider()
-            st.subheader("✅ Harassment YES/NO Model")
-            if res.get("binary_prob") is None:
-                st.warning("Binary harassment model not available.")
-            else:
-                st.progress(float(res.get("binary_prob", 0)))
-                st.caption(f"Harassment probability: {res.get('binary_prob', 0):.3f}")
+            st.subheader("📦 Evidence Readiness")
+            st.write(f"**Score:** `{res.get('evidence_readiness', 0)}/100`")
+            st.progress(float(res.get("evidence_readiness", 0) / 100))
 
-            # Types
+            missing = res.get("missing_evidence", []) or []
+            if missing:
+                st.warning("Missing evidence suggestions:")
+                for m in missing[:8]:
+                    st.write(f"• {m}")
+
+            st.divider()
+            st.subheader("⚖️ Possible Indian Laws")
+            laws = res.get("laws", []) or []
+            if laws:
+                for sec, desc in laws:
+                    st.write(f"**{sec}** — {desc}")
+
             st.divider()
             st.subheader("📍 Detected Harassment Types")
             types = res.get("detected_types", [])
@@ -456,73 +530,6 @@ with tabs[0]:
                     st.write(f"✅ {t}")
             else:
                 st.write("No harassment types detected.")
-
-            # Laws
-            st.divider()
-            st.subheader("⚖️ Possible Indian Laws (Informational)")
-            laws = res.get("laws", [])
-            if laws:
-                for sec, desc in laws:
-                    st.write(f"**{sec}** — {desc}")
-            else:
-                st.write("No law suggestions available for this summary.")
-
-            # Evidence readiness
-            st.divider()
-            st.subheader("📦 Evidence Readiness (Real-World)")
-            st.write(f"**Evidence Readiness Score:** `{res.get('evidence_readiness', 0)}/100`")
-            st.progress(float(res.get("evidence_readiness", 0) / 100))
-
-            checklist = res.get("evidence_checklist", [])
-            missing = res.get("missing_evidence", [])
-
-            if checklist:
-                st.write("✅ Recommended evidence for this case type:")
-                for item in checklist:
-                    st.write(f"• {item}")
-
-            if missing:
-                st.warning("❌ Missing evidence (highly recommended):")
-                for item in missing[:8]:
-                    st.write(f"• {item}")
-
-            # Next steps
-            st.divider()
-            st.subheader("🧭 Suggested Next Steps")
-            if res.get("harassment_likely"):
-                st.write("• Save the incident summary and timeline as JSON")
-                st.write("• Upload screenshots/audio/documents and generate the PDF evidence pack")
-                st.write("• Generate complaint drafts (Police / POSH / Cybercrime)")
-                st.write("• If immediate danger: contact emergency services")
-            else:
-                st.write("• Add more detail to the incident summary (what, when, where, who)")
-                st.write("• Add at least 2–3 timeline entries")
-                st.write("• Upload screenshots or chat exports if available")
-
-            # Toxicity
-            st.divider()
-            st.subheader("🤖 Toxicity Signals (Multi-label)")
-
-            if st.session_state.ml_ready_multilabel:
-                ml_probs = res.get("ml_probs", {})
-                if ml_probs:
-                    for k in LABEL_COLS:
-                        st.progress(float(ml_probs.get(k, 0.0)))
-                        st.caption(f"{k}: {ml_probs.get(k, 0.0):.3f}")
-                else:
-                    st.write("No toxicity probabilities returned.")
-            else:
-                st.warning("Toxicity model not available.")
-
-            with st.expander("🔎 Why it detected these types (rule matches)"):
-                hits = res.get("rule_hits", {})
-                if hits:
-                    for cat, phrases in hits.items():
-                        st.write(f"**{cat}**")
-                        for p in phrases:
-                            st.write(f"• matched: `{p}`")
-                else:
-                    st.write("No rule hits recorded.")
 
 
 # =========================================================
