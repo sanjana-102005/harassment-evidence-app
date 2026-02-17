@@ -7,7 +7,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from utils.auth import require_login
+
 from utils.pdf_generator import generate_evidence_pdf
 from utils.ml_predictor import load_models, predict_text, LABEL_COLS
 from utils.harassment_rules import detect_harassment_types
@@ -18,10 +18,7 @@ from utils.complaint_drafts import (
     build_cybercrime_draft,
 )
 
-# -----------------------------
-# LOGIN GATE
-# -----------------------------
-require_login()
+
 
 # -----------------------------
 # Basic config
