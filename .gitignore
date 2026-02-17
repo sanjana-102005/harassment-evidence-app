@@ -1,0 +1,26 @@
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ML models / large files
+*.pkl
+*.model
+*.npy
+
+# environments
+.venv/
+venv/
+env/
+
+# streamlit
+.streamlit/
+
+# private exports/uploads
+exports/
+uploads/
+
+# OS
+.DS_Store
+Thumbs.db
