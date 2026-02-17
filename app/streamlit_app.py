@@ -7,7 +7,6 @@ from datetime import datetime
 
 import streamlit as st
 
-
 from utils.pdf_generator import generate_evidence_pdf
 from utils.ml_predictor import load_models, predict_text, LABEL_COLS
 from utils.harassment_rules import detect_harassment_types
@@ -17,8 +16,6 @@ from utils.complaint_drafts import (
     build_posh_complaint,
     build_cybercrime_draft,
 )
-
-
 
 # -----------------------------
 # Basic config
@@ -151,9 +148,8 @@ def cleanup_case_files():
     """
     case_id = st.session_state.case_id
     upload_dir = os.path.join(UPLOAD_ROOT, case_id)
-    ok = safe_rmtree(upload_dir)
+    safe_rmtree(upload_dir)
     st.session_state.uploads = []
-    return ok
 
 
 def cleanup_case_exports():
@@ -162,7 +158,7 @@ def cleanup_case_exports():
     """
     case_id = st.session_state.case_id
     export_dir = os.path.join(EXPORT_ROOT, case_id)
-    return safe_rmtree(export_dir)
+    safe_rmtree(export_dir)
 
 
 # -----------------------------
