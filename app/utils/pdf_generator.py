@@ -1,4 +1,6 @@
 import os
+import json
+import hashlib
 from datetime import datetime
 
 from reportlab.lib.pagesizes import A4
@@ -30,12 +32,49 @@ def _is_image(path: str):
     return ext in [".png", ".jpg", ".jpeg"]
 
 
+def compute_case_fingerprint(case_data: dict) -> str:
+    """
+    Computes a SHA256 fingerprint of the case.
+    Includes: incident summary, timeline, analysis, and uploaded file SHA256 hashes.
+    """
+    stable = {
+        "case_id": case_data.get("case_id"),
+        "case_title": case_data.get("case_title"),
+        "reporter_role": case_data.get("reporter_role"),
+        "incident_location": case_data.get("incident_location"),
+        "incident_summary": case_data.get("incident_summary"),
+        "timeline": case_data.get("timeline", []),
+        "analysis_result": case_data.get("analysis_result", {}),
+        "uploads": [
+            {
+                "original_name": u.get("original_name"),
+                "size_kb": u.get("size_kb"),
+                "sha256": u.get("sha256"),
+                "uploaded_at": u.get("uploaded_at"),
+            }
+            for u in (case_data.get("uploads") or [])
+        ],
+    }
+
+    raw = json.dumps(stable, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
 def generate_evidence_pdf(case_data: dict, output_path: str):
     """
-    Creates a full evidence pack PDF (with SHA256 hashes + inline thumbnails for images).
+    Creates a full evidence pack PDF:
+    - Case info
+    - Analysis (types, laws, ML probs)
+    - Timeline
+    - Upload list with SHA256
+    - Full SHA256 list
+    - Inline thumbnails for image uploads
+    - Case fingerprint (tamper-proof)
     """
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    case_fingerprint = compute_case_fingerprint(case_data)
 
     doc = SimpleDocTemplate(
         output_path,
@@ -77,6 +116,10 @@ def generate_evidence_pdf(case_data: dict, output_path: str):
     case_id = _safe(case_data.get("case_id"))
     story.append(Paragraph(f"<b>Case ID:</b> {case_id}", normal))
     story.append(Paragraph(f"<b>Generated at:</b> {datetime.now().isoformat()}", normal))
+
+    story.append(Spacer(1, 8))
+    story.append(Paragraph("<b>CASE FINGERPRINT (SHA256):</b>", normal))
+    story.append(Paragraph(f"<font size=8>{case_fingerprint}</font>", normal))
     story.append(Spacer(1, 10))
 
     story.append(
@@ -368,7 +411,7 @@ def generate_evidence_pdf(case_data: dict, output_path: str):
     story.append(Spacer(1, 8))
     story.append(
         Paragraph(
-            "• SHA256 hashes are included to help verify evidence integrity.<br/>"
+            "• Case fingerprint and SHA256 hashes are included to help verify evidence integrity.<br/>"
             "• Keep original screenshots and device metadata intact.<br/>"
             "• Do not edit evidence files before submitting to police/HR/court.<br/>"
             "• If in immediate danger, contact emergency services.",
