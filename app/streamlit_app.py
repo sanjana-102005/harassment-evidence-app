@@ -8,7 +8,12 @@ from datetime import datetime
 import streamlit as st
 
 from utils.pdf_generator import generate_evidence_pdf
-from utils.ml_predictor import load_models, predict_text, LABEL_COLS
+from utils.ml_predictor import (
+    load_models,
+    predict_multilabel,
+    predict_harassment_binary,
+    LABEL_COLS,
+)
 from utils.harassment_rules import detect_harassment_types
 from utils.india_laws import get_india_laws
 from utils.complaint_drafts import (
@@ -79,26 +84,42 @@ if "case_id" not in st.session_state:
 if "models_loaded" not in st.session_state:
     st.session_state.models_loaded = False
 
-if "ml_ready" not in st.session_state:
-    st.session_state.ml_ready = False
+if "ml_ready_multilabel" not in st.session_state:
+    st.session_state.ml_ready_multilabel = False
+
+if "ml_ready_binary" not in st.session_state:
+    st.session_state.ml_ready_binary = False
 
 
 # -----------------------------
 # Load ML models once
 # -----------------------------
 @st.cache_resource
-def _load_ml_models():
+def _load_all_models():
     return load_models()
 
 
 try:
     if not st.session_state.models_loaded:
-        w2v, clf = _load_ml_models()
+        w2v, multilabel_clf, harass_tfidf, harass_clf = _load_all_models()
         st.session_state.models_loaded = True
-        st.session_state.ml_ready = (w2v is not None and clf is not None)
+
+        st.session_state.w2v = w2v
+        st.session_state.multilabel_clf = multilabel_clf
+        st.session_state.harass_tfidf = harass_tfidf
+        st.session_state.harass_clf = harass_clf
+
+        st.session_state.ml_ready_multilabel = (w2v is not None and multilabel_clf is not None)
+        st.session_state.ml_ready_binary = (harass_tfidf is not None and harass_clf is not None)
+
 except Exception:
     st.session_state.models_loaded = True
-    st.session_state.ml_ready = False
+    st.session_state.ml_ready_multilabel = False
+    st.session_state.ml_ready_binary = False
+    st.session_state.w2v = None
+    st.session_state.multilabel_clf = None
+    st.session_state.harass_tfidf = None
+    st.session_state.harass_clf = None
 
 
 # -----------------------------
@@ -142,10 +163,6 @@ def save_upload(file_obj):
 
 
 def cleanup_case_files():
-    """
-    Deletes the entire uploads/<case_id>/ folder
-    and clears session uploads list.
-    """
     case_id = st.session_state.case_id
     upload_dir = os.path.join(UPLOAD_ROOT, case_id)
     safe_rmtree(upload_dir)
@@ -153,38 +170,80 @@ def cleanup_case_files():
 
 
 def cleanup_case_exports():
-    """
-    Deletes exports/<case_id>/ folder.
-    """
     case_id = st.session_state.case_id
     export_dir = os.path.join(EXPORT_ROOT, case_id)
     safe_rmtree(export_dir)
 
 
 # -----------------------------
-# Analysis
+# Analysis (REAL-WORLD LOGIC)
 # -----------------------------
 def run_full_analysis(text: str):
     text = (text or "").strip()
 
+    # 1) Rule-based harassment types
     detected_types, rule_hits = detect_harassment_types(text)
+
+    # 2) Laws based on types
     laws = get_india_laws(detected_types)
 
-    ml_probs = {}
-    if st.session_state.ml_ready:
+    # 3) Binary harassment model (YES/NO)
+    binary_pred = None
+    binary_prob = None
+    if st.session_state.ml_ready_binary:
         try:
-            ml_probs = predict_text(text)
+            binary_pred, binary_prob = predict_harassment_binary(
+                text,
+                st.session_state.harass_tfidf,
+                st.session_state.harass_clf,
+            )
+        except Exception:
+            binary_pred, binary_prob = None, None
+
+    # 4) Multi-label toxicity model
+    ml_probs = {}
+    if st.session_state.ml_ready_multilabel:
+        try:
+            ml_probs = predict_multilabel(
+                text,
+                st.session_state.w2v,
+                st.session_state.multilabel_clf,
+            )
         except Exception:
             ml_probs = {}
 
+    # -----------------------------
+    # Final Harassment Decision (FIXED)
+    # -----------------------------
+    harassment_likely = False
+
+    # Binary model is strongest
+    if binary_pred == 1 and (binary_prob is not None and binary_prob >= 0.50):
+        harassment_likely = True
+
+    # Rule-based types also strong
+    if detected_types:
+        harassment_likely = True
+
+    # Toxicity only acts as weak fallback
+    if not harassment_likely and ml_probs:
+        if ml_probs.get("threat", 0) > 0.55:
+            harassment_likely = True
+        elif ml_probs.get("toxic", 0) > 0.80:
+            harassment_likely = True
+
+    # -----------------------------
+    # Severity scoring
+    # -----------------------------
     severity = 0
+
     type_weights = {
-        "Sexual Harassment / Physical Touching": 40,
-        "Workplace Harassment": 25,
-        "Stalking / Repeated Contact": 30,
-        "Online Sexual Harassment / Obscene Content": 30,
-        "Threat / Intimidation": 35,
-        "Blackmail / Sextortion": 35,
+        "Sexual Harassment / Physical Touching": 45,
+        "Workplace Harassment": 30,
+        "Stalking / Repeated Contact": 35,
+        "Online Sexual Harassment / Obscene Content": 35,
+        "Threat / Intimidation": 40,
+        "Blackmail / Sextortion": 40,
         "Hate-based Harassment": 25,
         "General Verbal Abuse": 15,
     }
@@ -192,20 +251,18 @@ def run_full_analysis(text: str):
     for t in detected_types:
         severity += type_weights.get(t, 15)
 
+    # binary prob influences severity
+    if binary_prob is not None:
+        severity += int(binary_prob * 35)
+
+    # toxicity adds smaller weight
     if ml_probs:
-        severity += int(ml_probs.get("toxic", 0) * 25)
-        severity += int(ml_probs.get("threat", 0) * 35)
-        severity += int(ml_probs.get("identity_hate", 0) * 20)
-        severity += int(ml_probs.get("obscene", 0) * 20)
-        severity += int(ml_probs.get("insult", 0) * 15)
+        severity += int(ml_probs.get("threat", 0) * 15)
+        severity += int(ml_probs.get("obscene", 0) * 12)
+        severity += int(ml_probs.get("identity_hate", 0) * 10)
+        severity += int(ml_probs.get("toxic", 0) * 8)
 
     severity = min(100, severity)
-
-    harassment_likely = False
-    if detected_types:
-        harassment_likely = True
-    elif ml_probs and ml_probs.get("toxic", 0) > 0.55:
-        harassment_likely = True
 
     return {
         "harassment_likely": harassment_likely,
@@ -214,6 +271,8 @@ def run_full_analysis(text: str):
         "rule_hits": rule_hits,
         "ml_probs": ml_probs,
         "laws": laws,
+        "binary_pred": binary_pred,
+        "binary_prob": binary_prob,
     }
 
 
@@ -221,11 +280,11 @@ def run_full_analysis(text: str):
 # UI Header
 # -----------------------------
 st.title("🛡️ Harassment Detection + Evidence Support (India)")
-st.caption("Hybrid harassment analysis + evidence integrity + complaint draft generation.")
+st.caption("Harassment YES/NO + harassment type + India law guidance + PDF evidence pack")
 
 st.warning(
-    "⚠️ Real-world safety note: Do NOT upload highly sensitive evidence on a public deployment. "
-    "Use local deployment for real cases. This tool is for educational + organizational support."
+    "⚠️ Safety note: Do NOT upload highly sensitive evidence on a public deployment. "
+    "Use local deployment for real cases. This tool is for educational + documentation support."
 )
 
 topA, topB, topC = st.columns([1, 1, 1])
@@ -234,7 +293,7 @@ with topA:
     st.markdown(f"**Case ID:** `{st.session_state.case_id}`")
 
 with topB:
-    st.caption("Uploads and exports are isolated per Case ID (real-world safe).")
+    st.caption("Uploads and exports are isolated per Case ID (multi-user safe).")
 
 with topC:
     if st.button("🧹 Reset Case (Delete uploads + clear data)", use_container_width=True):
@@ -276,6 +335,11 @@ with tabs[0]:
             "This app provides organizational support and general information. "
             "It is **not legal advice**. ML outputs are **not proof**."
         )
+
+        st.divider()
+        st.subheader("🤖 Model Status")
+        st.write(f"Binary harassment model: {'✅ Ready' if st.session_state.ml_ready_binary else '❌ Missing'}")
+        st.write(f"Multi-label toxicity model: {'✅ Ready' if st.session_state.ml_ready_multilabel else '❌ Missing'}")
 
     with mid:
         st.subheader("📝 Incident Details")
@@ -335,7 +399,7 @@ with tabs[0]:
             st.info("No timeline entries yet. Add at least 2–3 for a strong report.")
 
     with right:
-        st.subheader("🔍 Harassment Detection (Hybrid)")
+        st.subheader("🔍 Harassment Detection (Real-World)")
         st.write("This will NOT run automatically. Click the button below.")
 
         analyse_clicked = st.button("🔍 Analyse Incident", use_container_width=True)
@@ -351,7 +415,7 @@ with tabs[0]:
         if st.session_state.analysis_done:
             res = st.session_state.analysis_result
 
-            st.subheader("📌 Analysis Result")
+            st.subheader("📌 Final Result")
 
             if res.get("harassment_likely"):
                 st.success("Harassment Likely: YES")
@@ -360,6 +424,16 @@ with tabs[0]:
 
             st.write(f"**Severity Score:** `{res.get('combined_severity', 0)}/100`")
 
+            # Binary model output
+            st.divider()
+            st.subheader("✅ Harassment YES/NO Model")
+            if res.get("binary_prob") is None:
+                st.warning("Binary harassment model not available.")
+            else:
+                st.progress(float(res.get("binary_prob", 0)))
+                st.caption(f"Harassment probability: {res.get('binary_prob', 0):.3f}")
+
+            # Types
             st.divider()
             st.subheader("📍 Detected Harassment Types")
             types = res.get("detected_types", [])
@@ -369,6 +443,7 @@ with tabs[0]:
             else:
                 st.write("No harassment types detected.")
 
+            # Laws
             st.divider()
             st.subheader("⚖️ Possible Indian Laws (Informational)")
             laws = res.get("laws", [])
@@ -378,19 +453,20 @@ with tabs[0]:
             else:
                 st.write("No law suggestions available for this summary.")
 
+            # Toxicity
             st.divider()
-            st.subheader("🤖 ML Toxicity Probabilities")
+            st.subheader("🤖 Toxicity Signals (Multi-label)")
 
-            if st.session_state.ml_ready:
+            if st.session_state.ml_ready_multilabel:
                 ml_probs = res.get("ml_probs", {})
                 if ml_probs:
                     for k in LABEL_COLS:
                         st.progress(float(ml_probs.get(k, 0.0)))
                         st.caption(f"{k}: {ml_probs.get(k, 0.0):.3f}")
                 else:
-                    st.write("ML model returned no probabilities.")
+                    st.write("No toxicity probabilities returned.")
             else:
-                st.warning("ML model not available. Only rule-based detection is active.")
+                st.warning("Toxicity model not available.")
 
             with st.expander("🔎 Why it detected these types (rule matches)"):
                 hits = res.get("rule_hits", {})
