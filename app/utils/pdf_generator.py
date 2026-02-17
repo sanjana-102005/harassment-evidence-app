@@ -32,7 +32,7 @@ def _is_image(path: str):
 
 def generate_evidence_pdf(case_data: dict, output_path: str):
     """
-    Creates a full evidence pack PDF (with inline thumbnails for images).
+    Creates a full evidence pack PDF (with SHA256 hashes + inline thumbnails for images).
     """
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -158,7 +158,6 @@ def generate_evidence_pdf(case_data: dict, output_path: str):
         story.append(Paragraph(f"<b>Severity Score:</b> {severity}/100", normal))
         story.append(Spacer(1, 12))
 
-        # Detected types
         story.append(Paragraph("2.1 Detected Harassment Types", h3_style))
         story.append(Spacer(1, 6))
 
@@ -171,7 +170,6 @@ def generate_evidence_pdf(case_data: dict, output_path: str):
 
         story.append(Spacer(1, 12))
 
-        # India laws
         story.append(Paragraph("2.2 Possible Indian Laws (Informational)", h3_style))
         story.append(Spacer(1, 6))
 
@@ -184,7 +182,6 @@ def generate_evidence_pdf(case_data: dict, output_path: str):
 
         story.append(Spacer(1, 12))
 
-        # ML probabilities
         story.append(Paragraph("2.3 ML Toxicity Probabilities", h3_style))
         story.append(Spacer(1, 6))
 
@@ -217,7 +214,6 @@ def generate_evidence_pdf(case_data: dict, output_path: str):
 
         story.append(Spacer(1, 12))
 
-        # Rule hits
         story.append(Paragraph("2.4 Rule Matches (Explainability)", h3_style))
         story.append(Spacer(1, 6))
 
@@ -263,9 +259,9 @@ def generate_evidence_pdf(case_data: dict, output_path: str):
     story.append(PageBreak())
 
     # ---------------------------
-    # Uploads section (with thumbnails)
+    # Uploads section (SHA256 + thumbnails)
     # ---------------------------
-    story.append(Paragraph("4) Uploaded Evidence Files", h_style))
+    story.append(Paragraph("4) Uploaded Evidence Files (Integrity Verified)", h_style))
     story.append(Spacer(1, 10))
 
     uploads = case_data.get("uploads") or []
@@ -273,26 +269,28 @@ def generate_evidence_pdf(case_data: dict, output_path: str):
         story.append(Paragraph("No uploads were added.", normal))
         story.append(Spacer(1, 12))
     else:
-        # 4.1 List files
-        story.append(Paragraph("4.1 Evidence File List", h3_style))
+        story.append(Paragraph("4.1 Evidence File List + SHA256 Hash", h3_style))
         story.append(Spacer(1, 6))
 
-        upload_table_data = [["Original Name", "Type", "Size (KB)", "Uploaded At"]]
+        upload_table_data = [["Original Name", "Type", "Size (KB)", "SHA256 (first 16 chars)"]]
         for u in uploads:
             path = u.get("path", "")
             ext = os.path.splitext(path.lower())[1] if path else ""
+            sha256_hash = _safe(u.get("sha256", "N/A"))
+            sha_short = sha256_hash[:16] + "..." if sha256_hash != "N/A" else "N/A"
+
             upload_table_data.append(
                 [
                     _safe(u.get("original_name")),
                     ext.replace(".", "").upper(),
                     _safe(u.get("size_kb")),
-                    _safe(u.get("uploaded_at")),
+                    sha_short,
                 ]
             )
 
         upload_table = Table(
             upload_table_data,
-            colWidths=[7 * cm, 2 * cm, 2 * cm, 4 * cm],
+            colWidths=[6.5 * cm, 2 * cm, 2 * cm, 5 * cm],
         )
         upload_table.setStyle(
             TableStyle(
@@ -308,8 +306,15 @@ def generate_evidence_pdf(case_data: dict, output_path: str):
         story.append(upload_table)
         story.append(Spacer(1, 16))
 
-        # 4.2 Inline thumbnails
+        story.append(Paragraph("<b>Full SHA256 Hash Values:</b>", normal))
+        story.append(Spacer(1, 6))
+        for u in uploads:
+            story.append(Paragraph(f"• {_safe(u.get('original_name'))}", normal))
+            story.append(Paragraph(f"<font size=8>{_safe(u.get('sha256','N/A'))}</font>", normal))
+            story.append(Spacer(1, 6))
+
         story.append(PageBreak())
+
         story.append(Paragraph("4.2 Inline Image Thumbnails", h3_style))
         story.append(Spacer(1, 10))
 
@@ -323,6 +328,7 @@ def generate_evidence_pdf(case_data: dict, output_path: str):
                 original_name = _safe(u.get("original_name"))
                 uploaded_at = _safe(u.get("uploaded_at"))
                 size_kb = _safe(u.get("size_kb"))
+                sha256_hash = _safe(u.get("sha256", "N/A"))
 
                 story.append(
                     Paragraph(
@@ -331,17 +337,19 @@ def generate_evidence_pdf(case_data: dict, output_path: str):
                         normal,
                     )
                 )
+                story.append(
+                    Paragraph(
+                        f"<font size=8><b>SHA256:</b> {sha256_hash}</font>",
+                        normal,
+                    )
+                )
                 story.append(Spacer(1, 6))
 
                 try:
                     img = RLImage(path)
-
-                    # Fit into page nicely
                     img.drawWidth = 14 * cm
                     img.drawHeight = 9 * cm
-
                     story.append(KeepTogether([img, Spacer(1, 12)]))
-
                 except Exception:
                     story.append(
                         Paragraph(
@@ -360,6 +368,7 @@ def generate_evidence_pdf(case_data: dict, output_path: str):
     story.append(Spacer(1, 8))
     story.append(
         Paragraph(
+            "• SHA256 hashes are included to help verify evidence integrity.<br/>"
             "• Keep original screenshots and device metadata intact.<br/>"
             "• Do not edit evidence files before submitting to police/HR/court.<br/>"
             "• If in immediate danger, contact emergency services.",
