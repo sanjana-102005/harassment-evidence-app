@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import hashlib
 from datetime import datetime
 
 import streamlit as st
@@ -73,6 +74,14 @@ except Exception:
 # -----------------------------
 # Helpers
 # -----------------------------
+def compute_sha256(file_path: str):
+    sha = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+
 def save_upload(file_obj):
     if file_obj is None:
         return None
@@ -84,12 +93,14 @@ def save_upload(file_obj):
         f.write(file_obj.getbuffer())
 
     size_kb = round(os.path.getsize(save_path) / 1024, 2)
+    sha256_hash = compute_sha256(save_path)
 
     return {
         "original_name": file_obj.name,
         "saved_name": safe_name,
         "path": save_path,
         "size_kb": size_kb,
+        "sha256": sha256_hash,
         "uploaded_at": datetime.now().isoformat(),
     }
 
@@ -120,28 +131,22 @@ def run_full_analysis(text: str):
             ml_probs = {}
 
     # Combine into severity score (0-100)
-    # Simple + explainable:
-    # - Rule-based types add base severity
-    # - Toxicity adds extra
     severity = 0
 
-    # Rule type severity weights
     type_weights = {
-        "Sexual Harassment": 40,
+        "Sexual Harassment / Physical Touching": 40,
         "Workplace Harassment": 25,
-        "Stalking / Following": 30,
-        "Cyber Harassment": 25,
-        "Threats / Intimidation": 35,
-        "Physical Assault": 45,
-        "Verbal Abuse": 15,
-        "Blackmail / Extortion": 35,
-        "Domestic Harassment": 35,
+        "Stalking / Repeated Contact": 30,
+        "Online Sexual Harassment / Obscene Content": 30,
+        "Threat / Intimidation": 35,
+        "Blackmail / Sextortion": 35,
+        "Hate-based Harassment": 25,
+        "General Verbal Abuse": 15,
     }
 
     for t in detected_types:
         severity += type_weights.get(t, 15)
 
-    # ML toxicity adds severity
     if ml_probs:
         severity += int(ml_probs.get("toxic", 0) * 25)
         severity += int(ml_probs.get("threat", 0) * 35)
@@ -222,7 +227,6 @@ with mid:
         key="incident_summary",
     )
 
-    # Timeline entry fields
     st.subheader("📅 Timeline Entry")
 
     col1, col2 = st.columns(2)
@@ -274,7 +278,6 @@ with mid:
 # -----------------------------
 with right:
     st.subheader("🔍 Harassment Detection (Hybrid)")
-
     st.write("This will NOT run automatically. Click the button below.")
 
     analyse_clicked = st.button("🔍 Analyse Incident", use_container_width=True)
@@ -284,11 +287,9 @@ with right:
             st.error("Write an incident summary first.")
         else:
             result = run_full_analysis(incident_summary)
-
             st.session_state.analysis_done = True
             st.session_state.analysis_result = result
 
-    # Only show analysis AFTER button click
     if st.session_state.analysis_done:
         res = st.session_state.analysis_result
 
@@ -346,7 +347,7 @@ with right:
                 st.write("No rule hits recorded.")
 
     st.divider()
-    st.subheader("📎 Upload Evidence")
+    st.subheader("📎 Upload Evidence (SHA256 secured)")
 
     up = st.file_uploader(
         "Upload screenshots / audio / docs",
@@ -362,16 +363,16 @@ with right:
         st.success("Uploaded successfully.")
 
     if st.session_state.uploads:
-        st.write("Uploaded files:")
+        st.write("Uploaded files (with SHA256 hash):")
         for u in st.session_state.uploads:
             st.caption(f"• {u['original_name']} ({u['size_kb']} KB)")
+            st.code(u.get("sha256", "N/A"), language="text")
     else:
         st.caption("No files uploaded yet.")
 
     st.divider()
     st.subheader("💾 Save + Export")
 
-    # Save JSON
     case_json = {
         "case_id": st.session_state.case_id,
         "case_title": case_title.strip(),
@@ -395,7 +396,6 @@ with right:
         use_container_width=True,
     )
 
-    # PDF
     if st.button("📄 Generate PDF Evidence Pack", use_container_width=True):
         pdf_name = f"evidence_pack_{st.session_state.case_id}.pdf"
         pdf_path = os.path.join(EXPORT_DIR, pdf_name)
