@@ -6,6 +6,7 @@ from datetime import datetime
 
 import streamlit as st
 
+from utils.auth import require_login
 from utils.pdf_generator import generate_evidence_pdf
 from utils.ml_predictor import load_models, predict_text, LABEL_COLS
 from utils.harassment_rules import detect_harassment_types
@@ -15,6 +16,11 @@ from utils.complaint_drafts import (
     build_posh_complaint,
     build_cybercrime_draft,
 )
+
+# -----------------------------
+# LOGIN GATE (REAL-WORLD)
+# -----------------------------
+require_login()
 
 
 # -----------------------------
@@ -200,12 +206,15 @@ st.warning(
     "Use local deployment for real cases. This tool is for educational + organizational support."
 )
 
-topA, topB = st.columns([1, 1])
+topA, topB, topC = st.columns([1, 1, 1])
 
 with topA:
     st.markdown(f"**Case ID:** `{st.session_state.case_id}`")
 
 with topB:
+    st.markdown("")
+
+with topC:
     if st.button("🧹 Reset Case (Delete uploads + clear data)", use_container_width=True):
         deleted = cleanup_case_files()
         new_case()
@@ -229,13 +238,12 @@ with tabs[0]:
             value=st.session_state.case_title,
         )
 
+        roles = ["Victim/Target", "Witness", "Friend/Helper", "HR/Employer", "Other"]
         st.session_state.reporter_role = st.selectbox(
             "Your role",
-            ["Victim/Target", "Witness", "Friend/Helper", "HR/Employer", "Other"],
-            index=["Victim/Target", "Witness", "Friend/Helper", "HR/Employer", "Other"].index(
-                st.session_state.reporter_role
-            )
-            if st.session_state.reporter_role in ["Victim/Target", "Witness", "Friend/Helper", "HR/Employer", "Other"]
+            roles,
+            index=roles.index(st.session_state.reporter_role)
+            if st.session_state.reporter_role in roles
             else 0,
         )
 
@@ -439,7 +447,6 @@ with tabs[1]:
                 use_container_width=True,
             )
 
-        # Delete uploads after export
         if delete_after_export:
             deleted_count = cleanup_case_files()
             st.success(
@@ -448,7 +455,7 @@ with tabs[1]:
         else:
             st.success("PDF generated successfully. Privacy Mode OFF → evidence files kept locally.")
 
-        # Delete exported PDF after generation (real-world privacy)
+        # delete PDF after generation for privacy
         safe_delete_file(pdf_path)
 
     st.download_button(
