@@ -1,422 +1,230 @@
 import os
-import json
+import io
 import hashlib
 from datetime import datetime
 
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import cm
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
     Spacer,
     Table,
     TableStyle,
+    Image,
     PageBreak,
-    Image as RLImage,
-    KeepTogether,
 )
 from reportlab.lib import colors
+from reportlab.lib.utils import ImageReader
+from PIL import Image as PILImage
 
 
-def _safe(v, default=""):
-    if v is None:
-        return default
-    return str(v)
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _is_image(path: str):
-    if not path:
-        return False
-    ext = os.path.splitext(path.lower())[1]
-    return ext in [".png", ".jpg", ".jpeg"]
+def _safe_str(x):
+    if x is None:
+        return ""
+    return str(x)
 
 
-def compute_case_fingerprint(case_data: dict) -> str:
+def _build_case_fingerprint(case_data: dict) -> str:
     """
-    Computes a SHA256 fingerprint of the case.
-    Includes: incident summary, timeline, analysis, and uploaded file SHA256 hashes.
+    Creates a stable fingerprint of the entire case
+    excluding local file paths.
     """
-    stable = {
-        "case_id": case_data.get("case_id"),
-        "case_title": case_data.get("case_title"),
-        "reporter_role": case_data.get("reporter_role"),
-        "incident_location": case_data.get("incident_location"),
-        "incident_summary": case_data.get("incident_summary"),
-        "timeline": case_data.get("timeline", []),
-        "analysis_result": case_data.get("analysis_result", {}),
-        "uploads": [
+    clean = dict(case_data)
+
+    uploads = []
+    for u in case_data.get("uploads", []):
+        uploads.append(
             {
                 "original_name": u.get("original_name"),
+                "saved_name": u.get("saved_name"),
                 "size_kb": u.get("size_kb"),
                 "sha256": u.get("sha256"),
                 "uploaded_at": u.get("uploaded_at"),
             }
-            for u in (case_data.get("uploads") or [])
-        ],
-    }
+        )
+    clean["uploads"] = uploads
 
-    raw = json.dumps(stable, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
+    return _sha256_text(str(clean))
+
+
+def _image_thumbnail(path: str, max_w=3.5 * inch, max_h=3.5 * inch):
+    """
+    Returns a ReportLab Image object resized safely.
+    """
+    try:
+        pil = PILImage.open(path)
+        pil.thumbnail((int(max_w), int(max_h)))
+        buf = io.BytesIO()
+        pil.save(buf, format="PNG")
+        buf.seek(0)
+        return Image(buf, width=pil.size[0], height=pil.size[1])
+    except Exception:
+        return None
 
 
 def generate_evidence_pdf(case_data: dict, output_path: str):
-    """
-    Creates a full evidence pack PDF:
-    - Case info
-    - Analysis (types, laws, ML probs)
-    - Timeline
-    - Upload list with SHA256
-    - Full SHA256 list
-    - Inline thumbnails for image uploads
-    - Case fingerprint (tamper-proof)
-    """
-
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    case_fingerprint = compute_case_fingerprint(case_data)
-
-    doc = SimpleDocTemplate(
-        output_path,
-        pagesize=A4,
-        rightMargin=2 * cm,
-        leftMargin=2 * cm,
-        topMargin=2 * cm,
-        bottomMargin=2 * cm,
-        title="Harassment Evidence Pack",
-        author="Harassment Detection + Evidence Support App",
-    )
-
     styles = getSampleStyleSheet()
-
-    title_style = styles["Title"]
-    h_style = styles["Heading2"]
-    h3_style = styles["Heading3"]
-
-    normal = styles["BodyText"]
-    normal.fontSize = 10
-    normal.leading = 14
-
-    small = ParagraphStyle(
-        name="Small",
-        parent=styles["BodyText"],
-        fontSize=9,
-        leading=12,
-        textColor=colors.grey,
-    )
-
     story = []
 
-    # ---------------------------
     # Header
-    # ---------------------------
-    story.append(Paragraph("Harassment Evidence Pack (India)", title_style))
-    story.append(Spacer(1, 12))
-
-    case_id = _safe(case_data.get("case_id"))
-    story.append(Paragraph(f"<b>Case ID:</b> {case_id}", normal))
-    story.append(Paragraph(f"<b>Generated at:</b> {datetime.now().isoformat()}", normal))
-
-    story.append(Spacer(1, 8))
-    story.append(Paragraph("<b>CASE FINGERPRINT (SHA256):</b>", normal))
-    story.append(Paragraph(f"<font size=8>{case_fingerprint}</font>", normal))
+    story.append(Paragraph("Harassment Evidence Pack (India)", styles["Title"]))
     story.append(Spacer(1, 10))
 
-    story.append(
-        Paragraph(
-            "<i>Disclaimer: This document is generated for organizational support and does not constitute legal advice.</i>",
-            small,
-        )
-    )
-    story.append(Spacer(1, 14))
+    # Case meta
+    case_id = case_data.get("case_id", "N/A")
+    story.append(Paragraph(f"<b>Case ID:</b> {case_id}", styles["Normal"]))
+    story.append(Paragraph(f"<b>Created:</b> {datetime.now().isoformat()}", styles["Normal"]))
+    story.append(Spacer(1, 10))
 
-    # ---------------------------
-    # Case info
-    # ---------------------------
-    story.append(Paragraph("1) Case Information", h_style))
+    # Case summary
+    story.append(Paragraph("<b>Case Title</b>", styles["Heading2"]))
+    story.append(Paragraph(_safe_str(case_data.get("case_title", "")), styles["Normal"]))
     story.append(Spacer(1, 8))
 
-    case_title = _safe(case_data.get("case_title"))
-    reporter_role = _safe(case_data.get("reporter_role"))
-    incident_location = _safe(case_data.get("incident_location"))
-    incident_summary = _safe(case_data.get("incident_summary"))
+    story.append(Paragraph("<b>Reporter Role</b>", styles["Heading2"]))
+    story.append(Paragraph(_safe_str(case_data.get("reporter_role", "")), styles["Normal"]))
+    story.append(Spacer(1, 8))
 
-    info_table = Table(
-        [
-            ["Case Title", case_title],
-            ["Reporter Role", reporter_role],
-            ["Incident Location", incident_location],
-        ],
-        colWidths=[5 * cm, 10 * cm],
-    )
+    story.append(Paragraph("<b>Incident Location</b>", styles["Heading2"]))
+    story.append(Paragraph(_safe_str(case_data.get("incident_location", "")), styles["Normal"]))
+    story.append(Spacer(1, 8))
 
-    info_table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (0, -1), colors.whitesmoke),
-                ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ]
-        )
-    )
-
-    story.append(info_table)
+    story.append(Paragraph("<b>Incident Summary</b>", styles["Heading2"]))
+    story.append(Paragraph(_safe_str(case_data.get("incident_summary", "")), styles["Normal"]))
     story.append(Spacer(1, 12))
 
-    story.append(Paragraph("<b>Incident Summary:</b>", normal))
-    story.append(Spacer(1, 4))
-    story.append(Paragraph(incident_summary.replace("\n", "<br/>"), normal))
-    story.append(Spacer(1, 14))
-
-    # ---------------------------
-    # Analysis section
-    # ---------------------------
-    story.append(Paragraph("2) Harassment Detection Analysis (Hybrid)", h_style))
-    story.append(Spacer(1, 10))
-
-    analysis_done = bool(case_data.get("analysis_done"))
-    analysis = case_data.get("analysis_result") or {}
-
-    if not analysis_done or not analysis:
-        story.append(
-            Paragraph(
-                "No analysis was performed before export. (User did not click Analyse.)",
-                normal,
-            )
-        )
-        story.append(PageBreak())
-    else:
-        harassment_likely = analysis.get("harassment_likely", False)
-        severity = analysis.get("combined_severity", 0)
-
-        story.append(
-            Paragraph(
-                f"<b>Harassment Likely:</b> {'YES' if harassment_likely else 'NOT CLEAR / LOW SIGNAL'}",
-                normal,
-            )
-        )
-        story.append(Paragraph(f"<b>Severity Score:</b> {severity}/100", normal))
-        story.append(Spacer(1, 12))
-
-        story.append(Paragraph("2.1 Detected Harassment Types", h3_style))
-        story.append(Spacer(1, 6))
-
-        types = analysis.get("detected_types") or []
-        if types:
-            for t in types:
-                story.append(Paragraph(f"• {t}", normal))
-        else:
-            story.append(Paragraph("No harassment types detected.", normal))
-
-        story.append(Spacer(1, 12))
-
-        story.append(Paragraph("2.2 Possible Indian Laws (Informational)", h3_style))
-        story.append(Spacer(1, 6))
-
-        laws = analysis.get("laws") or []
-        if laws:
-            for sec, desc in laws:
-                story.append(Paragraph(f"<b>{_safe(sec)}</b> — {_safe(desc)}", normal))
-        else:
-            story.append(Paragraph("No law suggestions available.", normal))
-
-        story.append(Spacer(1, 12))
-
-        story.append(Paragraph("2.3 ML Toxicity Probabilities", h3_style))
-        story.append(Spacer(1, 6))
-
-        ml_probs = analysis.get("ml_probs") or {}
-        if ml_probs:
-            prob_table_data = [["Label", "Probability"]]
-            for k, v in ml_probs.items():
-                prob_table_data.append([k, f"{float(v):.3f}"])
-
-            prob_table = Table(prob_table_data, colWidths=[7 * cm, 4 * cm])
-            prob_table.setStyle(
-                TableStyle(
-                    [
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-                        ("FONTSIZE", (0, 0), (-1, -1), 9),
-                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ]
-                )
-            )
-            story.append(prob_table)
-        else:
-            story.append(
-                Paragraph(
-                    "ML model probabilities not available (model missing or error).",
-                    normal,
-                )
-            )
-
-        story.append(Spacer(1, 12))
-
-        story.append(Paragraph("2.4 Rule Matches (Explainability)", h3_style))
-        story.append(Spacer(1, 6))
-
-        rule_hits = analysis.get("rule_hits") or {}
-        if rule_hits:
-            for cat, phrases in rule_hits.items():
-                story.append(Paragraph(f"<b>{cat}</b>", normal))
-                for p in phrases:
-                    story.append(Paragraph(f"• matched: {p}", normal))
-                story.append(Spacer(1, 6))
-        else:
-            story.append(Paragraph("No rule matches recorded.", normal))
-
-        story.append(PageBreak())
-
-    # ---------------------------
-    # Timeline section
-    # ---------------------------
-    story.append(Paragraph("3) Timeline of Events", h_style))
-    story.append(Spacer(1, 10))
-
-    timeline = case_data.get("timeline") or []
+    # Timeline
+    story.append(Paragraph("Timeline", styles["Heading1"]))
+    timeline = case_data.get("timeline", [])
     if timeline:
+        rows = [["#", "Date", "Time", "Location", "Description"]]
         for i, e in enumerate(timeline, start=1):
-            story.append(Paragraph(f"<b>Event {i}</b>", h3_style))
-            story.append(Spacer(1, 4))
-            story.append(
-                Paragraph(
-                    f"<b>Date:</b> {_safe(e.get('date'))} &nbsp;&nbsp; "
-                    f"<b>Time:</b> {_safe(e.get('time'))} &nbsp;&nbsp; "
-                    f"<b>Location:</b> {_safe(e.get('location'))}",
-                    normal,
-                )
-            )
-            story.append(Spacer(1, 4))
-            story.append(
-                Paragraph(_safe(e.get("description")).replace("\n", "<br/>"), normal)
-            )
-            story.append(Spacer(1, 12))
-    else:
-        story.append(Paragraph("No timeline entries provided.", normal))
-
-    story.append(PageBreak())
-
-    # ---------------------------
-    # Uploads section (SHA256 + thumbnails)
-    # ---------------------------
-    story.append(Paragraph("4) Uploaded Evidence Files (Integrity Verified)", h_style))
-    story.append(Spacer(1, 10))
-
-    uploads = case_data.get("uploads") or []
-    if not uploads:
-        story.append(Paragraph("No uploads were added.", normal))
-        story.append(Spacer(1, 12))
-    else:
-        story.append(Paragraph("4.1 Evidence File List + SHA256 Hash", h3_style))
-        story.append(Spacer(1, 6))
-
-        upload_table_data = [["Original Name", "Type", "Size (KB)", "SHA256 (first 16 chars)"]]
-        for u in uploads:
-            path = u.get("path", "")
-            ext = os.path.splitext(path.lower())[1] if path else ""
-            sha256_hash = _safe(u.get("sha256", "N/A"))
-            sha_short = sha256_hash[:16] + "..." if sha256_hash != "N/A" else "N/A"
-
-            upload_table_data.append(
+            rows.append(
                 [
-                    _safe(u.get("original_name")),
-                    ext.replace(".", "").upper(),
-                    _safe(u.get("size_kb")),
-                    sha_short,
+                    str(i),
+                    _safe_str(e.get("date")),
+                    _safe_str(e.get("time")),
+                    _safe_str(e.get("location")),
+                    _safe_str(e.get("description")),
                 ]
             )
-
-        upload_table = Table(
-            upload_table_data,
-            colWidths=[6.5 * cm, 2 * cm, 2 * cm, 5 * cm],
-        )
-        upload_table.setStyle(
+        table = Table(rows, colWidths=[0.4 * inch, 1.0 * inch, 0.8 * inch, 1.6 * inch, 2.8 * inch])
+        table.setStyle(
             TableStyle(
                 [
                     ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                    ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ]
             )
         )
-        story.append(upload_table)
-        story.append(Spacer(1, 16))
+        story.append(table)
+    else:
+        story.append(Paragraph("No timeline entries provided.", styles["Normal"]))
 
-        story.append(Paragraph("<b>Full SHA256 Hash Values:</b>", normal))
-        story.append(Spacer(1, 6))
-        for u in uploads:
-            story.append(Paragraph(f"• {_safe(u.get('original_name'))}", normal))
-            story.append(Paragraph(f"<font size=8>{_safe(u.get('sha256','N/A'))}</font>", normal))
-            story.append(Spacer(1, 6))
+    story.append(PageBreak())
 
-        story.append(PageBreak())
+    # Analysis
+    story.append(Paragraph("Analysis Output", styles["Heading1"]))
+    analysis = case_data.get("analysis_result", {}) if case_data.get("analysis_done") else {}
 
-        story.append(Paragraph("4.2 Inline Image Thumbnails", h3_style))
-        story.append(Spacer(1, 10))
+    story.append(Paragraph(f"<b>Harassment Likely:</b> {_safe_str(analysis.get('harassment_likely'))}", styles["Normal"]))
+    story.append(Paragraph(f"<b>Severity:</b> {_safe_str(analysis.get('combined_severity'))}/100", styles["Normal"]))
+    story.append(Spacer(1, 10))
 
-        image_uploads = [u for u in uploads if _is_image(u.get("path"))]
+    # Types
+    story.append(Paragraph("<b>Detected Types</b>", styles["Heading2"]))
+    types = analysis.get("detected_types", [])
+    if types:
+        for t in types:
+            story.append(Paragraph(f"• {t}", styles["Normal"]))
+    else:
+        story.append(Paragraph("None detected.", styles["Normal"]))
 
-        if not image_uploads:
-            story.append(Paragraph("No image evidence files were uploaded.", normal))
-        else:
-            for idx, u in enumerate(image_uploads, start=1):
-                path = u.get("path", "")
-                original_name = _safe(u.get("original_name"))
-                uploaded_at = _safe(u.get("uploaded_at"))
-                size_kb = _safe(u.get("size_kb"))
-                sha256_hash = _safe(u.get("sha256", "N/A"))
+    story.append(Spacer(1, 10))
 
-                story.append(
-                    Paragraph(
-                        f"<b>Image {idx}:</b> {original_name} "
-                        f"(Uploaded: {uploaded_at}, Size: {size_kb} KB)",
-                        normal,
-                    )
-                )
-                story.append(
-                    Paragraph(
-                        f"<font size=8><b>SHA256:</b> {sha256_hash}</font>",
-                        normal,
-                    )
-                )
-                story.append(Spacer(1, 6))
+    # Laws
+    story.append(Paragraph("<b>Suggested Indian Legal References (Informational)</b>", styles["Heading2"]))
+    laws = analysis.get("laws", [])
+    if laws:
+        for sec, desc in laws:
+            story.append(Paragraph(f"• <b>{sec}</b>: {desc}", styles["Normal"]))
+    else:
+        story.append(Paragraph("No law suggestions available.", styles["Normal"]))
 
-                try:
-                    img = RLImage(path)
-                    img.drawWidth = 14 * cm
-                    img.drawHeight = 9 * cm
-                    story.append(KeepTogether([img, Spacer(1, 12)]))
-                except Exception:
-                    story.append(
-                        Paragraph(
-                            f"⚠️ Could not render image thumbnail for: {original_name}",
-                            normal,
-                        )
-                    )
-                    story.append(Spacer(1, 12))
+    story.append(PageBreak())
 
-    story.append(Spacer(1, 16))
+    # Evidence list + hashes
+    story.append(Paragraph("Evidence Listing + Integrity (SHA256)", styles["Heading1"]))
+    uploads = case_data.get("uploads", [])
+    if uploads:
+        rows = [["#", "File", "Size (KB)", "SHA256"]]
+        for i, u in enumerate(uploads, start=1):
+            rows.append(
+                [
+                    str(i),
+                    _safe_str(u.get("original_name")),
+                    _safe_str(u.get("size_kb")),
+                    _safe_str(u.get("sha256")),
+                ]
+            )
+        table = Table(rows, colWidths=[0.4 * inch, 2.0 * inch, 0.9 * inch, 3.2 * inch])
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ]
+            )
+        )
+        story.append(table)
+    else:
+        story.append(Paragraph("No evidence files uploaded.", styles["Normal"]))
 
-    # ---------------------------
-    # Footer notes
-    # ---------------------------
-    story.append(Paragraph("5) Notes", h_style))
-    story.append(Spacer(1, 8))
+    story.append(Spacer(1, 12))
+
+    # Case fingerprint
+    fingerprint = _build_case_fingerprint(case_data)
+    story.append(Paragraph("<b>Case Fingerprint (SHA256)</b>", styles["Heading2"]))
+    story.append(Paragraph(fingerprint, styles["Code"]))
+    story.append(Spacer(1, 10))
+
+    # Thumbnails
+    story.append(Paragraph("Image Thumbnails (if applicable)", styles["Heading1"]))
+    any_thumb = False
+    for u in uploads:
+        p = u.get("path", "")
+        if p.lower().endswith((".png", ".jpg", ".jpeg")) and os.path.exists(p):
+            thumb = _image_thumbnail(p)
+            if thumb:
+                any_thumb = True
+                story.append(Paragraph(f"<b>{u.get('original_name')}</b>", styles["Normal"]))
+                story.append(thumb)
+                story.append(Spacer(1, 12))
+
+    if not any_thumb:
+        story.append(Paragraph("No image thumbnails available.", styles["Normal"]))
+
+    # Footer note
+    story.append(Spacer(1, 18))
     story.append(
         Paragraph(
-            "• Case fingerprint and SHA256 hashes are included to help verify evidence integrity.<br/>"
-            "• Keep original screenshots and device metadata intact.<br/>"
-            "• Do not edit evidence files before submitting to police/HR/court.<br/>"
-            "• If in immediate danger, contact emergency services.",
-            normal,
+            "<i>Note: This PDF is generated for documentation support. "
+            "Hashes are included for integrity verification.</i>",
+            styles["Normal"],
         )
     )
 
+    doc = SimpleDocTemplate(output_path, pagesize=A4)
     doc.build(story)
