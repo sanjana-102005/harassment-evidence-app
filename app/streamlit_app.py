@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import shutil
 import hashlib
 from datetime import datetime
 
@@ -18,10 +19,9 @@ from utils.complaint_drafts import (
 )
 
 # -----------------------------
-# LOGIN GATE (REAL-WORLD)
+# LOGIN GATE
 # -----------------------------
 require_login()
-
 
 # -----------------------------
 # Basic config
@@ -32,16 +32,38 @@ st.set_page_config(
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-EXPORT_DIR = os.path.join(BASE_DIR, "..", "exports")
-UPLOAD_DIR = os.path.join(BASE_DIR, "..", "uploads")
+EXPORT_ROOT = os.path.join(BASE_DIR, "..", "exports")
+UPLOAD_ROOT = os.path.join(BASE_DIR, "..", "uploads")
 
-os.makedirs(EXPORT_DIR, exist_ok=True)
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(EXPORT_ROOT, exist_ok=True)
+os.makedirs(UPLOAD_ROOT, exist_ok=True)
 
 
 # -----------------------------
-# Session defaults
+# Case/session helpers
 # -----------------------------
+def get_case_upload_dir(case_id: str) -> str:
+    p = os.path.join(UPLOAD_ROOT, case_id)
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
+def get_case_export_dir(case_id: str) -> str:
+    p = os.path.join(EXPORT_ROOT, case_id)
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
+def safe_rmtree(path: str):
+    try:
+        if path and os.path.exists(path):
+            shutil.rmtree(path, ignore_errors=True)
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def new_case():
     st.session_state.case_id = str(uuid.uuid4())[:8]
     st.session_state.timeline = []
@@ -86,7 +108,7 @@ except Exception:
 
 
 # -----------------------------
-# Helpers
+# Hashing
 # -----------------------------
 def compute_sha256(file_path: str):
     sha = hashlib.sha256()
@@ -96,35 +118,18 @@ def compute_sha256(file_path: str):
     return sha.hexdigest()
 
 
-def safe_delete_file(path: str):
-    try:
-        if path and os.path.exists(path):
-            os.remove(path)
-            return True
-    except Exception:
-        return False
-    return False
-
-
-def cleanup_case_files():
-    """
-    Deletes all uploaded evidence files for this session.
-    Also clears session upload list.
-    """
-    deleted = 0
-    for u in list(st.session_state.uploads):
-        if safe_delete_file(u.get("path")):
-            deleted += 1
-    st.session_state.uploads = []
-    return deleted
-
-
+# -----------------------------
+# Upload handling
+# -----------------------------
 def save_upload(file_obj):
     if file_obj is None:
         return None
 
-    safe_name = f"{st.session_state.case_id}_{uuid.uuid4().hex}_{file_obj.name}"
-    save_path = os.path.join(UPLOAD_DIR, safe_name)
+    case_id = st.session_state.case_id
+    upload_dir = get_case_upload_dir(case_id)
+
+    safe_name = f"{uuid.uuid4().hex}_{file_obj.name}"
+    save_path = os.path.join(upload_dir, safe_name)
 
     with open(save_path, "wb") as f:
         f.write(file_obj.getbuffer())
@@ -142,6 +147,30 @@ def save_upload(file_obj):
     }
 
 
+def cleanup_case_files():
+    """
+    Deletes the entire uploads/<case_id>/ folder
+    and clears session uploads list.
+    """
+    case_id = st.session_state.case_id
+    upload_dir = os.path.join(UPLOAD_ROOT, case_id)
+    ok = safe_rmtree(upload_dir)
+    st.session_state.uploads = []
+    return ok
+
+
+def cleanup_case_exports():
+    """
+    Deletes exports/<case_id>/ folder.
+    """
+    case_id = st.session_state.case_id
+    export_dir = os.path.join(EXPORT_ROOT, case_id)
+    return safe_rmtree(export_dir)
+
+
+# -----------------------------
+# Analysis
+# -----------------------------
 def run_full_analysis(text: str):
     text = (text or "").strip()
 
@@ -196,7 +225,7 @@ def run_full_analysis(text: str):
 
 
 # -----------------------------
-# Header
+# UI Header
 # -----------------------------
 st.title("🛡️ Harassment Detection + Evidence Support (India)")
 st.caption("Hybrid harassment analysis + evidence integrity + complaint draft generation.")
@@ -212,20 +241,21 @@ with topA:
     st.markdown(f"**Case ID:** `{st.session_state.case_id}`")
 
 with topB:
-    st.markdown("")
+    st.caption("Uploads and exports are isolated per Case ID (real-world safe).")
 
 with topC:
     if st.button("🧹 Reset Case (Delete uploads + clear data)", use_container_width=True):
-        deleted = cleanup_case_files()
+        cleanup_case_files()
+        cleanup_case_exports()
         new_case()
-        st.success(f"Case reset done. Deleted {deleted} uploaded file(s).")
+        st.success("Case reset done. Uploads and exports cleared.")
         st.rerun()
 
 tabs = st.tabs(["🔍 Analyse Incident", "📄 Evidence Pack (PDF)", "📝 Complaint Drafts"])
 
 
 # =========================================================
-# TAB 1: ANALYSE
+# TAB 1
 # =========================================================
 with tabs[0]:
     left, mid, right = st.columns([1, 1.6, 1.2])
@@ -381,13 +411,13 @@ with tabs[0]:
 
 
 # =========================================================
-# TAB 2: PDF + Uploads
+# TAB 2
 # =========================================================
 with tabs[1]:
     st.subheader("📎 Upload Evidence + Export PDF")
 
     st.info(
-        "Evidence uploads are stored temporarily in `/uploads`. "
+        "Evidence uploads are stored temporarily in `/uploads/<case_id>/`. "
         "Recommended: keep Privacy Mode ON."
     )
 
@@ -433,8 +463,11 @@ with tabs[1]:
     st.divider()
 
     if st.button("📄 Generate PDF Evidence Pack", use_container_width=True):
-        pdf_name = f"evidence_pack_{st.session_state.case_id}.pdf"
-        pdf_path = os.path.join(EXPORT_DIR, pdf_name)
+        case_id = st.session_state.case_id
+        export_dir = get_case_export_dir(case_id)
+
+        pdf_name = f"evidence_pack_{case_id}.pdf"
+        pdf_path = os.path.join(export_dir, pdf_name)
 
         generate_evidence_pdf(case_json, pdf_path)
 
@@ -448,15 +481,11 @@ with tabs[1]:
             )
 
         if delete_after_export:
-            deleted_count = cleanup_case_files()
-            st.success(
-                f"PDF generated successfully. Privacy Mode ON → deleted {deleted_count} evidence files."
-            )
+            cleanup_case_files()
+            cleanup_case_exports()
+            st.success("PDF generated. Privacy Mode ON → uploads and exports deleted.")
         else:
-            st.success("PDF generated successfully. Privacy Mode OFF → evidence files kept locally.")
-
-        # delete PDF after generation for privacy
-        safe_delete_file(pdf_path)
+            st.success("PDF generated. Privacy Mode OFF → uploads and exports kept.")
 
     st.download_button(
         "💾 Save Case as JSON",
@@ -468,7 +497,7 @@ with tabs[1]:
 
 
 # =========================================================
-# TAB 3: COMPLAINT DRAFTS
+# TAB 3
 # =========================================================
 with tabs[2]:
     st.subheader("📝 Complaint Draft Generator (India)")
