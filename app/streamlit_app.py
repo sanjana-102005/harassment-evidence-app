@@ -14,7 +14,10 @@ from utils.ml_predictor import (
     predict_harassment_binary,
     LABEL_COLS,
 )
-from utils.harassment_rules import detect_harassment_types
+from utils.harassment_rules import (
+    detect_harassment_types,
+    build_evidence_checklist,
+)
 from utils.india_laws import get_india_laws
 from utils.complaint_drafts import (
     build_police_complaint,
@@ -264,6 +267,14 @@ def run_full_analysis(text: str):
 
     severity = min(100, severity)
 
+    # -----------------------------
+    # Evidence readiness checklist
+    # -----------------------------
+    checklist, missing, readiness_score = build_evidence_checklist(
+        detected_types,
+        st.session_state.uploads,
+    )
+
     return {
         "harassment_likely": harassment_likely,
         "combined_severity": severity,
@@ -273,6 +284,9 @@ def run_full_analysis(text: str):
         "laws": laws,
         "binary_pred": binary_pred,
         "binary_prob": binary_prob,
+        "evidence_checklist": checklist,
+        "missing_evidence": missing,
+        "evidence_readiness": readiness_score,
     }
 
 
@@ -452,6 +466,38 @@ with tabs[0]:
                     st.write(f"**{sec}** — {desc}")
             else:
                 st.write("No law suggestions available for this summary.")
+
+            # Evidence readiness
+            st.divider()
+            st.subheader("📦 Evidence Readiness (Real-World)")
+            st.write(f"**Evidence Readiness Score:** `{res.get('evidence_readiness', 0)}/100`")
+            st.progress(float(res.get("evidence_readiness", 0) / 100))
+
+            checklist = res.get("evidence_checklist", [])
+            missing = res.get("missing_evidence", [])
+
+            if checklist:
+                st.write("✅ Recommended evidence for this case type:")
+                for item in checklist:
+                    st.write(f"• {item}")
+
+            if missing:
+                st.warning("❌ Missing evidence (highly recommended):")
+                for item in missing[:8]:
+                    st.write(f"• {item}")
+
+            # Next steps
+            st.divider()
+            st.subheader("🧭 Suggested Next Steps")
+            if res.get("harassment_likely"):
+                st.write("• Save the incident summary and timeline as JSON")
+                st.write("• Upload screenshots/audio/documents and generate the PDF evidence pack")
+                st.write("• Generate complaint drafts (Police / POSH / Cybercrime)")
+                st.write("• If immediate danger: contact emergency services")
+            else:
+                st.write("• Add more detail to the incident summary (what, when, where, who)")
+                st.write("• Add at least 2–3 timeline entries")
+                st.write("• Upload screenshots or chat exports if available")
 
             # Toxicity
             st.divider()
