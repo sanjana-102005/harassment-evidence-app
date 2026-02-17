@@ -82,6 +82,16 @@ def compute_sha256(file_path: str):
     return sha.hexdigest()
 
 
+def safe_delete_file(path: str):
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def save_upload(file_obj):
     if file_obj is None:
         return None
@@ -198,6 +208,15 @@ with left:
         "Your role",
         ["Victim/Target", "Witness", "Friend/Helper", "HR/Employer", "Other"],
         key="reporter_role",
+    )
+
+    st.divider()
+    st.subheader("🔐 Privacy Mode")
+
+    delete_after_export = st.checkbox(
+        "Delete uploaded evidence files after generating PDF",
+        value=True,
+        help="Recommended for real-world privacy. PDF will still contain file hashes + thumbnails.",
     )
 
     st.divider()
@@ -371,7 +390,7 @@ with right:
         st.caption("No files uploaded yet.")
 
     st.divider()
-    st.subheader("💾 Save + Export")
+    st.subheader("📄 Export Evidence Pack")
 
     case_json = {
         "case_id": st.session_state.case_id,
@@ -386,22 +405,13 @@ with right:
         "created_at": datetime.now().isoformat(),
     }
 
-    json_bytes = json.dumps(case_json, indent=2).encode("utf-8")
-
-    st.download_button(
-        "💾 Save Case as JSON",
-        data=json_bytes,
-        file_name=f"case_{st.session_state.case_id}.json",
-        mime="application/json",
-        use_container_width=True,
-    )
-
     if st.button("📄 Generate PDF Evidence Pack", use_container_width=True):
         pdf_name = f"evidence_pack_{st.session_state.case_id}.pdf"
         pdf_path = os.path.join(EXPORT_DIR, pdf_name)
 
         generate_evidence_pdf(case_json, pdf_path)
 
+        # Offer download
         with open(pdf_path, "rb") as f:
             st.download_button(
                 "⬇️ Download PDF",
@@ -410,4 +420,25 @@ with right:
                 mime="application/pdf",
                 use_container_width=True,
             )
-        st.success("PDF generated successfully.")
+
+        # PRIVACY MODE: delete evidence after export
+        if delete_after_export:
+            deleted_count = 0
+            for u in list(st.session_state.uploads):
+                if safe_delete_file(u.get("path")):
+                    deleted_count += 1
+
+            st.session_state.uploads = []
+            st.success(
+                f"PDF generated successfully. Privacy Mode ON → deleted {deleted_count} evidence files."
+            )
+        else:
+            st.success("PDF generated successfully. Privacy Mode OFF → evidence files kept locally.")
+
+    st.download_button(
+        "💾 Save Case as JSON",
+        data=json.dumps(case_json, indent=2).encode("utf-8"),
+        file_name=f"case_{st.session_state.case_id}.json",
+        mime="application/json",
+        use_container_width=True,
+    )
