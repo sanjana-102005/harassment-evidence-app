@@ -21,6 +21,8 @@ env/
 exports/
 uploads/
 
+
 # OS
 .DS_Store
 Thumbs.db
+data/
