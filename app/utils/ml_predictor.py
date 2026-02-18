@@ -73,7 +73,14 @@ def predict_multilabel(text: str, w2v_model, multilabel_clf):
 
 
 def predict_harassment_binary(text: str, tfidf, clf):
+    """
+    Real-world threshold:
+    - 0.70 reduces false positives heavily.
+    """
     X = tfidf.transform([text])
     prob = float(clf.predict_proba(X)[0][1])
-    pred = int(prob >= 0.50)
+
+    # IMPORTANT: Higher threshold to avoid false positives
+    pred = int(prob >= 0.70)
+
     return pred, prob
